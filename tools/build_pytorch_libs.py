@@ -13,7 +13,6 @@ from .setup_helpers.env import check_negative_env_flag, IS_64BIT, IS_WINDOWS
 
 def _overlay_windows_vcvars(env: Dict[str, str]) -> Dict[str, str]:
     vc_arch = os.getenv("NINJA_VC_ARCH", "")
-    print('ionut')
     print(vc_arch)
     if not vc_arch:
         vc_arch = "x64" if IS_64BIT else "x86"
