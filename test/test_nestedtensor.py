@@ -8,6 +8,7 @@ from functools import partial
 import numpy as np
 import torch
 import torch.nn
+from torch.testing._internal.common_cuda import SM80OrLater
 from torch.testing._internal.common_device_type import (
     dtypes,
     dtypesIfCUDA,
@@ -3385,6 +3386,66 @@ class TestNestedTensorSubclass(NestedTestCase):
         self.assertTrue(nt_contiguous.is_contiguous(memory_format=torch.contiguous_format))
         self.assertTrue(not nt_noncontiguous.is_contiguous(memory_format=torch.contiguous_format))
         self.assertTrue(nt_contiguous_narrow.is_contiguous(memory_format=torch.contiguous_format))
+
+    # CPU Fused kernels do not support nested, Math is missing ops to work with NT jagged
+    @onlyCUDA
+    @parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32] if
+                 SM80OrLater else [torch.float16, torch.float32])
+    def test_sdpa(self, device, dtype):
+        batch_size = 1
+        emb_dims = 1024
+        n_heads = 8
+        head_dims = emb_dims // n_heads
+
+        # Unless running on newer GPUs, only mem-effn or math are available, and mem-effn
+        # will fail with gradients and math has ops that aren't implemented. Therefore, in
+        # order to get some kernel to work with most GPUs, we have to disable gradients in
+        # this more general test
+        torch.set_grad_enabled(False)
+        sen1 = torch.randn(11, emb_dims, dtype=dtype, device=device)
+        sen2 = torch.randn(13, emb_dims, dtype=dtype, device=device)
+
+        query = torch.nn.Linear(emb_dims, emb_dims, bias=False, device=device, dtype=dtype)
+        key = torch.nn.Linear(emb_dims, emb_dims, bias=False, device=device, dtype=dtype)
+        value = torch.nn.Linear(emb_dims, emb_dims, bias=False, device=device, dtype=dtype)
+
+        # Simplest case: 1 sentence, no batching
+        x_d1 = sen1.unsqueeze(0)
+        x_nt = torch.nested.as_nested_tensor([sen1], layout=torch.jagged)
+
+        q_d1 = query(x_d1).view(batch_size, -1, n_heads, head_dims).transpose(1, 2)
+        k_d1 = key(x_d1).view(batch_size, -1, n_heads, head_dims).transpose(1, 2)
+        v_d1 = value(x_d1).view(batch_size, -1, n_heads, head_dims).transpose(1, 2)
+
+        q_nt = query(x_nt).view(*x_nt.size()[0:2], n_heads, head_dims).transpose(1, 2)
+        k_nt = key(x_nt).view(*x_nt.size()[0:2], n_heads, head_dims).transpose(1, 2)
+        v_nt = value(x_nt).view(*x_nt.size()[0:2], n_heads, head_dims).transpose(1, 2)
+
+        attn_d1 = torch.nn.functional.scaled_dot_product_attention(q_d1, k_d1, v_d1).transpose(1, 2)
+        attn_nt = torch.nn.functional.scaled_dot_product_attention(q_nt, k_nt, v_nt).transpose(1, 2)
+
+        self.assertEqual(attn_d1, attn_nt.unbind()[0].unsqueeze(0))
+
+        # Simple case: 2 sentences, no extra params
+        x_d2 = sen2.unsqueeze(0)
+        x_nt = torch.nested.as_nested_tensor([sen1, sen2], layout=torch.jagged)
+
+        q_d2 = query(x_d2).view(batch_size, -1, n_heads, head_dims).transpose(1, 2)
+        k_d2 = key(x_d2).view(batch_size, -1, n_heads, head_dims).transpose(1, 2)
+        v_d2 = value(x_d2).view(batch_size, -1, n_heads, head_dims).transpose(1, 2)
+
+        q_nt = query(x_nt).view(*x_nt.size()[0:2], n_heads, head_dims).transpose(1, 2)
+        k_nt = key(x_nt).view(*x_nt.size()[0:2], n_heads, head_dims).transpose(1, 2)
+        v_nt = value(x_nt).view(*x_nt.size()[0:2], n_heads, head_dims).transpose(1, 2)
+
+        attn_d2 = torch.nn.functional.scaled_dot_product_attention(q_d2, k_d2, v_d2).transpose(1, 2)
+        attn_nt = torch.nn.functional.scaled_dot_product_attention(q_nt, k_nt, v_nt).transpose(1, 2)
+
+        attn_nts = attn_nt.unbind()
+        self.assertEqual(attn_d1, attn_nts[0].unsqueeze(0))
+        self.assertEqual(attn_d2, attn_nts[1].unsqueeze(0))
+        torch.set_grad_enabled(True)
+
 
 
 instantiate_parametrized_tests(TestNestedTensor)
