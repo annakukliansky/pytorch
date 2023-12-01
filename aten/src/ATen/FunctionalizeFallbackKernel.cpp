@@ -7,6 +7,7 @@
 #include <torch/library.h>
 #include <c10/util/irange.h>
 #include <c10/util/strides.h>
+#include <c10/core/DispatchKey.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/ATen.h>
@@ -24,7 +25,10 @@
 #include <ATen/ops/empty_strided_native.h>
 #include <ATen/ops/_unsafe_view.h>
 
+#include <c10/core/DispatchKey.h>
+
 #include <utility>
+#include <iostream>
 #endif
 
 namespace {
